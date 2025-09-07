@@ -1,0 +1,23 @@
+name: zig CI
+
+on:
+  push:
+    branches: [ "main" ]
+  pull_request:
+    branches: [ "main" ]
+
+jobs:
+  build:
+
+    runs-on: ubuntu-latest
+
+    name: Build and Test
+    steps:
+      - uses: actions/checkout@v3
+        with:
+          lfs: 'true'
+      - uses: mlugg/setup-zig@v2
+        with:
+          version: 0.16.0-dev.172+a11dfaf61
+      - run: zig build test
+      - run: zig build test -Dtarget=x86_64-linux
