@@ -31,6 +31,11 @@ pub fn run(gpa: mem.Allocator, comptime function: anytype, args: anytype) !void 
     const pid = try posix.fork();
     if (pid == 0) {
         posix.sigprocmask(posix.SIG.SETMASK, &oldsigset, null);
+
+        try posix.setuid(0);
+        try posix.setgid(0);
+
+        (try Thread.spawn(.{}, function, args)).join();
     } else {
         const status = posix.waitpid(pid, 0);
         switch (statusToTerm(status.status)) {
@@ -45,12 +50,6 @@ pub fn run(gpa: mem.Allocator, comptime function: anytype, args: anytype) !void 
             else => return,
         }
     }
-
-    try posix.setuid(0);
-    try posix.setgid(0);
-
-    const thread = try Thread.spawn(.{}, function, args);
-    defer thread.join();
 }
 
 fn syncWithChild(fd: posix.fd_t, pid: posix.pid_t) !void {
@@ -79,51 +78,47 @@ fn statusToTerm(status: u32) std.process.Child.Term {
         .{ .Unknown = status };
 }
 
-const MapIdsOptions = struct {
-    pid: posix.pid_t,
-    inner: u32,
-    outer_uid: u32,
-    outer_gid: u32,
-};
+fn mapIdsExternal(gpa: std.mem.Allocator, pid: posix.pid_t) !void {
+    const pid_str = try std.fmt.allocPrint(gpa, "{d}", .{pid});
+    defer gpa.free(pid_str);
 
-fn mapIdsInternal(gpa: std.mem.Allocator, options: MapIdsOptions) !void {
+    var uid_list = try RangeList.init(gpa, .uid, pid_str);
+    defer uid_list.deinit(gpa);
+    var gid_list = try RangeList.init(gpa, .gid, pid_str);
+    defer gid_list.deinit(gpa);
+
     {
-        // Write the UID map
-        const uid_map_path = try std.fmt.allocPrint(gpa, "/proc/{d}/uid_map", .{options.pid});
-        defer gpa.free(uid_map_path);
-        var uid_map_file = try std.fs.openFileAbsolute(uid_map_path, .{ .mode = .write_only });
-        defer uid_map_file.close();
-        var buf: [1024]u8 = undefined;
-        var file_writer = uid_map_file.writer(&buf);
-        const writer = &file_writer.interface;
-        try writer.print("{d} {d} 1", .{ options.inner, options.outer_uid });
-        try writer.flush();
+        const argv = try uid_list.toArgv(gpa);
+        defer {
+            for (argv) |arg| gpa.free(arg);
+            gpa.free(argv);
+        }
+
+        const result = try std.process.Child.run(.{
+            .allocator = gpa,
+            .argv = argv,
+        });
+        defer {
+            gpa.free(result.stdout);
+            gpa.free(result.stderr);
+        }
     }
 
     {
-        // Write "deny" to setgroups before writing the gid_map.
-        const setgroups_path = try std.fmt.allocPrint(gpa, "/proc/{d}/setgroups", .{options.pid});
-        defer gpa.free(setgroups_path);
-        var setgroups_file = try std.fs.openFileAbsolute(setgroups_path, .{ .mode = .write_only });
-        defer setgroups_file.close();
-        var buf: [1024]u8 = undefined;
-        var file_writer = setgroups_file.writer(&buf);
-        const writer = &file_writer.interface;
-        try writer.print("deny", .{});
-        try writer.flush();
-    }
+        const argv = try gid_list.toArgv(gpa);
+        defer {
+            for (argv) |arg| gpa.free(arg);
+            gpa.free(argv);
+        }
 
-    {
-        // Write the GID map
-        const gid_map_path = try std.fmt.allocPrint(gpa, "/proc/{d}/gid_map", .{options.pid});
-        defer gpa.free(gid_map_path);
-        var gid_map_file = try std.fs.openFileAbsolute(gid_map_path, .{ .mode = .write_only });
-        defer gid_map_file.close();
-        var buf: [1024]u8 = undefined;
-        var file_writer = gid_map_file.writer(&buf);
-        const writer = &file_writer.interface;
-        try writer.print("{d} {d} 1", .{ options.inner, options.outer_gid });
-        try writer.flush();
+        const result = try std.process.Child.run(.{
+            .allocator = gpa,
+            .argv = argv,
+        });
+        defer {
+            gpa.free(result.stdout);
+            gpa.free(result.stderr);
+        }
     }
 }
 
@@ -133,16 +128,7 @@ fn mapIdsFromChild(gpa: std.mem.Allocator, fd: *posix.fd_t) !posix.fd_t {
     const child = try forkAndWait(fd);
     if (child > 0) return child;
 
-    const real_uid = linux.geteuid();
-    const real_gid = linux.getegid();
-
-    // Write the maps for our parent process directly.
-    mapIdsInternal(gpa, .{
-        .pid = ppid,
-        .inner = 0,
-        .outer_uid = real_uid,
-        .outer_gid = real_gid,
-    }) catch |err| {
+    mapIdsExternal(gpa, ppid) catch |err| {
         log.err("Mapper process failed to write maps: {s}", .{@errorName(err)});
         posix.exit(1);
     };
@@ -180,11 +166,13 @@ const linux = std.os.linux;
 const posix = std.posix;
 const posix_ext = @import("posix_ext.zig");
 const testing = std.testing;
+const RangeList = @import("RangeList.zig");
 const container = @This();
 
 const PIPE_SYNC_BYTE = 0x06;
 
 test {
+    _ = RangeList;
     const message = "Hello from the outside world!";
 
     try container.run(testing.allocator, (struct {
