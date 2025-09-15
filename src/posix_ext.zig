@@ -1,23 +1,70 @@
+/// A wrapper around the raw `syscall5` to provide a typed error set for the mount(2) syscall.
 pub const MountError = error{
+    /// EACCES: A component of a path was not searchable, or mounting a read-only
+    /// filesystem was attempted without the MS_RDONLY flag.
     Access,
+    /// EBUSY: The source is already mounted, or it cannot be remounted read-only
+    /// because it still holds files open for writing.
     Busy,
+    /// EFAULT: A pointer argument points outside the user address space.
     Fault,
+    /// EINVAL: Invalid superblock, invalid remount/move operation, or invalid flags.
     InvalidValue,
+    /// ELOOP: Too many links encountered during pathname resolution or a move
+    /// operation where the target is a descendant of the source.
     Loop,
+    /// EMFILE: The table of dummy devices is full.
     FileTableOverflow,
+    /// ENAMETOOLONG: A pathname was longer than MAXPATHLEN.
     NameTooLong,
+    /// ENODEV: The filesystem type is not configured in the kernel.
     NoDevice,
+    /// ENOENT: A pathname was empty or had a nonexistent component.
     NoEntry,
+    /// ENOMEM: The kernel could not allocate memory.
     NoMemory,
+    /// ENOTBLK: The source is not a block device when one was required.
     NotBlockDevice,
+    /// ENOTDIR: The target, or a prefix of the source, is not a directory.
     NotDirectory,
+    /// ENXIO: The major number of the block device source is out of range.
     NoDeviceOrAddress,
+    /// EPERM: The caller does not have the required privileges.
     PermissionDenied,
+    /// EROFS: An attempt was made to mount a read-only filesystem without the MS_RDONLY flag.
     ReadOnlyFileSystem,
 } || posix.UnexpectedError;
 
-pub fn mountZ(source: [*:0]const u8, target: [*:0]const u8, fstype: ?[*:0]const u8, flags: u32, data: ?[*:0]const u8) MountError!void {
-    const rc = linux.mount(source, target, fstype, flags, data);
+/// A wrapper around the raw `syscall2` to provide a typed error set for the umount2(2) syscall.
+pub const UmountError = error{
+    /// EAGAIN: A call to umount2() with MNT_EXPIRE successfully marked an unbusy filesystem as expired.
+    Again,
+    /// EBUSY: The target could not be unmounted because it is busy.
+    Busy,
+    /// EFAULT: The target points outside the user address space.
+    Fault,
+    /// EINVAL: The target is not a mount point or is locked.
+    InvalidValue,
+    /// ENAMETOOLONG: A pathname was longer than MAXPATHLEN.
+    NameTooLong,
+    /// ENOENT: A pathname was empty or had a nonexistent component.
+    NoEntry,
+    /// ENOMEM: The kernel could not allocate memory.
+    NoMemory,
+    /// EPERM: The caller does not have the required privileges.
+    PermissionDenied,
+} || posix.UnexpectedError;
+
+/// Mounts a filesystem.
+/// This function wraps the raw `mount` syscall to return a typed `MountError`.
+pub fn mountZ(
+    special: [*:0]const u8,
+    dir: [*:0]const u8,
+    fstype: ?[*:0]const u8,
+    flags: u32,
+    data: usize,
+) MountError!void {
+    const rc = linux.mount(special, dir, fstype, flags, data);
     return switch (posix.errno(rc)) {
         .SUCCESS => {},
         .ACCES => error.Access,
@@ -39,19 +86,10 @@ pub fn mountZ(source: [*:0]const u8, target: [*:0]const u8, fstype: ?[*:0]const 
     };
 }
 
-pub const UmountError = error{
-    Again,
-    Busy,
-    Fault,
-    InvalidValue,
-    NameTooLong,
-    NoEntry,
-    NoMemory,
-    PermissionDenied,
-} || posix.UnexpectedError;
-
-pub fn umount2Z(target: [*:0]const u8, flags: u32) UmountError!void {
-    const rc = linux.umount2(target, flags);
+/// Unmounts a filesystem with the specified flags.
+/// This function wraps the raw `umount2` syscall to return a typed `UmountError`.
+pub fn umount2Z(special: [*:0]const u8, flags: u32) UmountError!void {
+    const rc = linux.umount2(special, flags);
     return switch (posix.errno(rc)) {
         .SUCCESS => {},
         .AGAIN => error.Again,
@@ -62,6 +100,50 @@ pub fn umount2Z(target: [*:0]const u8, flags: u32) UmountError!void {
         .NOENT => error.NoEntry,
         .NOMEM => error.NoMemory,
         .PERM => error.PermissionDenied,
+        else => |e| posix.unexpectedErrno(e),
+    };
+}
+
+/// A typed error set for failures from the chroot(2) syscall.
+pub const ChrootError = error{
+    /// EACCES: Search permission is denied on a component of the path prefix.
+    Access,
+    /// EFAULT: The path points outside the process's accessible address space.
+    Fault,
+    /// EIO: An I/O error occurred.
+    InputOutput,
+    /// ELOOP: Too many symbolic links were encountered in resolving the path.
+    Loop,
+    /// ENAMETOOLONG: The path is too long.
+    NameTooLong,
+    /// ENOENT: The path does not exist.
+    NoEntry,
+    /// ENOMEM: Insufficient kernel memory was available.
+    NoMemory,
+    /// ENOTDIR: A component of the path is not a directory.
+    NotDirectory,
+    /// EPERM: The caller has insufficient privilege to perform the operation.
+    PermissionDenied,
+} || posix.UnexpectedError;
+
+/// Changes the root directory of the calling process to the specified path.
+/// This function wraps the raw `chroot` syscall to return a typed `ChrootError`.
+pub fn chrootZ(path: [*:0]const u8) ChrootError!void {
+    // The chroot syscall returns 0 on success and -1 on error.
+    const rc = linux.chroot(path);
+
+    return switch (posix.errno(rc)) {
+        .SUCCESS => {}, // Success, return void.
+        .ACCES => error.Access,
+        .FAULT => error.Fault,
+        .IO => error.InputOutput,
+        .LOOP => error.Loop,
+        .NAMETOOLONG => error.NameTooLong,
+        .NOENT => error.NoEntry,
+        .NOMEM => error.NoMemory,
+        .NOTDIR => error.NotDirectory,
+        .PERM => error.PermissionDenied,
+        // Forward any other unexpected errno to the caller.
         else => |e| posix.unexpectedErrno(e),
     };
 }

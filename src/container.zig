@@ -1,3 +1,5 @@
+pub const Chroot = @import("Chroot.zig");
+
 pub fn run(gpa: mem.Allocator, comptime function: anytype, args: anytype) !void {
     var flags: u32 = 0;
     flags |= linux.CLONE.NEWUSER;
@@ -35,7 +37,10 @@ pub fn run(gpa: mem.Allocator, comptime function: anytype, args: anytype) !void 
         try posix.setuid(0);
         try posix.setgid(0);
 
-        (try Thread.spawn(.{}, function, args)).join();
+        @call(.auto, function, args) catch {
+            posix.exit(1);
+        };
+        posix.exit(0);
     } else {
         const status = posix.waitpid(pid, 0);
         switch (statusToTerm(status.status)) {
