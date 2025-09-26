@@ -119,7 +119,7 @@ fn pathGreaterThan(context: void, a: [:0]const u8, b: [:0]const u8) bool {
 fn teardown(self: *Chroot) void {
     std.sort.block([:0]const u8, self.active_mounts.items, {}, pathGreaterThan);
     for (self.active_mounts.items) |mount_point| {
-        posix_ext.umount2Z(mount_point, 0) catch unreachable;
+        posix_ext.umount2Z(mount_point, 0) catch {};
     }
     self.active_mounts.clearRetainingCapacity();
 }
